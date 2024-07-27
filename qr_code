@@ -1,0 +1,240 @@
+<?php session_start(); 
+
+require 'vendor/autoload.php';
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+// Create a new PHPMailer instance
+$mail = new PHPMailer(true);
+$mail->isSMTP();
+
+function generateOtp($length = 4) {
+    $otp = '';
+    for ($i = 0; $i < $length; $i++) {
+        $otp .= rand(0, 9); // Append a random digit between 0 and 9
+    }
+    return $otp;
+}
+
+?> 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>01Menu - Register</title>
+    <link rel="stylesheet" href="assets/bootstrap/css/bootstrap.min.css">
+    <link rel="stylesheet" href="style.css">
+    <link rel="shortcut icon" href="img/logo.png" type="image/x-icon">
+    <!-- jQuery CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <!-- Toastr CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
+</head>
+<body style="background-color: #f7f7f7;">
+    <header class="bg-light" id="landing">
+        <nav class="navbar navbar-expand-lg navbar-light bg-light bg-light">
+            <div class="container-fluid">
+                <a class="navbar-brand d-flex justify-content-start align-items-center" href="index.html">
+                  <img src="img/logo.png" width="100px" alt="">
+                </a>
+              <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarTogglerDemo01" aria-controls="navbarTogglerDemo01" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+              </button>
+              <div class="collapse navbar-collapse m-auto" id="navbarTogglerDemo01">
+                <ul class="navbar-nav ms-auto mb-2 mb-lg-0 align-items-center">
+                  <li class="nav-item">
+                    <a class="nav-link active" aria-current="page" href="premium.html">Premium</a>
+                  </li>
+                  <li class="nav-item active">
+                    <a class="nav-link active" aria-current="page" href="login.php">Sign In</a>
+                  </li>
+                  <a href="register.php" class="btn btn-primary m-3 rounded-0">Get Started</a>
+                </ul>
+              </div>
+            </div>
+          </nav>
+        </header>
+        <?php
+require 'vendor/autoload.php';  // Adjust the path to your PHPMailer library
+
+// Initialize variables and message
+$name = $company_name = $email = $address = $phone_number = $password = $re_pass = '';
+$message = '';
+$isValid = true;
+
+try {
+    include('db.php');
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        $name = $_POST['name'];
+        $company_name = $_POST['c-name'];
+        $email = $_POST['email'];
+        $address = $_POST['address'];
+        $phone_number = $_POST['number'];
+        $password = $_POST['pass'];
+        $re_pass = $_POST['re-pass'];
+
+        // Validation
+        if (strlen($password) > 20) {
+            $message = 'Password must not be more than 20 characters.';
+            $isValid = false;
+        } elseif ($password !== $re_pass) {
+            $message = 'Passwords do not match.';
+            $isValid = false;
+        } else {
+            // Check if email already exists
+            $stmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE email = ?');
+            $stmt->execute([$email]);
+            if ($stmt->fetchColumn() > 0) {
+                $message = 'Email already exists.';
+                $isValid = false;
+            } else {
+                // Check if company_name already exists
+                $stmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE company_name = ?');
+                $stmt->execute([$company_name]);
+                if ($stmt->fetchColumn() > 0) {
+                    $message = 'Company name already exists.';
+                    $isValid = false;
+                } else {
+                    // Insert user data into the database
+                    $stmt = $pdo->prepare('INSERT INTO users (name, company_name, email, address, phone_number, password, verification_token) VALUES (?, ?, ?, ?, ?, ?, ?)');
+                    $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+                   $verificationToken = generateOtp();
+                    if ($stmt->execute([$name, $company_name, $email, $address, $phone_number, $hashedPassword, $verificationToken])) {
+                        $userId = $pdo->lastInsertId();
+                        
+                        // Generate URL for QR Code
+                        $url = "https://01menu.online/download.php/" . urlencode($company_name);
+                        
+                        // Debug: Print URL
+                        echo "Generated URL for QR code: " . htmlspecialchars($url) . "<br>";
+
+                        // Generate QR code
+                        require_once 'phpqrcode/qrlib.php';  // Adjust the path to your phpqrcode library
+                        $qr_code_dir = 'uploads';  // Directory to store QR codes
+                        if (!is_dir($qr_code_dir)) {
+                            mkdir($qr_code_dir, 0755, true); // Create the directory if it doesn't exist
+                        }
+                        $qr_code_file = $qr_code_dir . '/' . $userId . '_qr_code.png';  // Path to save QR code
+                        
+                        // Debug: Check file path
+                        echo "Saving QR code to: " . htmlspecialchars($qr_code_file) . "<br>";
+                        
+                        QRcode::png($url, $qr_code_file, 'L', 4, 2);
+
+                        // Optionally save QR code path in the database
+                        $stmt = $pdo->prepare('UPDATE users SET qr_image = ? WHERE id = ?');
+                        $stmt->execute([$qr_code_file, $userId]);
+
+                        // Send verification email
+                        $verificationLink = "http://01menu.online/verify.php?token=" . $verificationToken;
+
+                        $mail = new PHPMailer(true);
+                        try {
+                            // Server settings
+                            $mail->isSMTP();
+                            $mail->Host       = '01menu.online';  // Update with your SMTP server
+                            $mail->SMTPAuth   = true;
+                            $mail->Username   = 'noreply@01menu.online';  // Update with your SMTP username
+                            $mail->Password   = 'roFkyf-muvpex-8xytso';  // Update with your SMTP password
+                            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;  // Use 'ssl' or 'tls' depending on your server
+                            $mail->Port       = 587;  // TCP port to connect to
+
+                            // Recipients
+                            $mail->setFrom('noreply@01menu.online', 'Online');
+                            $mail->addAddress($email);
+
+                            // Content
+                            $mail->isHTML(false);  // Set email format to HTML if needed
+                            $mail->Subject = 'Please verify your email address';
+                            $mail->Body    = "Hello $name,\n\n Your 2FA code is:\n\n$verificationToken : http://www.01menu.online. 01technologies.co\n\nThank you!";
+
+                            $mail->send();
+                            $message = 'Registration successful. Please check your email to verify your account.';
+                        } catch (Exception $e) {
+                            $message = 'Registration successful, but failed to send verification email. Mailer Error: ' . $mail->ErrorInfo;
+                        }
+                    } else {
+                        $message = 'Registration failed.';
+                        $isValid = false;
+                    }
+                }
+            }
+        }
+    }
+} catch (PDOException $e) {
+    $message = 'Database error: ' . $e->getMessage();
+} catch (Exception $e) {
+    $message = 'An unexpected error occurred: ' . $e->getMessage();
+}
+?>
+
+
+
+
+
+
+
+        <div class="p-1">
+          <div class="p-3 bg-light" style="max-width: 500px; margin: 2rem auto;">
+          <form method="POST" class="py-5">
+        <div class="mb-3">
+            <h5 class="text-center h5">Sign Up</h5>
+        </div>
+        <div class="mb-3">
+            <label for="name" class="form-label">Full Name</label>
+            <input type="text" class="form-control" id="name" name="name" value="<?php echo htmlspecialchars($_POST['name'] ?? ''); ?>" required>
+        </div>
+        <div class="mb-3">
+            <label for="c-name" class="form-label">Company Name</label>
+            <input type="text" class="form-control" id="c-name" name="c-name" value="<?php echo htmlspecialchars($_POST['c-name'] ?? ''); ?>" required>
+        </div>
+        <div class="mb-3">
+            <label for="email" class="form-label">Email address</label>
+            <input type="email" class="form-control" id="email" name="email" value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>" required>
+        </div>
+        <div class="mb-3">
+            <label for="address" class="form-label">Enter Address</label>
+            <textarea name="address" id="address" class="form-control" required style="width: 100%;"><?php echo htmlspecialchars($_POST['address'] ?? ''); ?></textarea>
+        </div>
+        <div class="mb-3">
+            <label for="number" class="form-label">Phone Number</label>
+            <input type="number" class="form-control" id="number" name="number" value="<?php echo htmlspecialchars($_POST['number'] ?? ''); ?>" required>
+        </div>
+        <div class="mb-3">
+            <label for="pass" class="form-label">Password</label>
+            <input type="password" class="form-control" id="pass" name="pass" required>
+        </div>
+        <div class="mb-3">
+            <label for="re-pass" class="form-label">Re-enter Password</label>
+            <input type="password" class="form-control" id="re-pass" name="re-pass" required>
+        </div>
+        <div class="mb-3">
+            <span class="small"><a href="login.php" class="text-dark">Login Instead</a></span>
+        </div>
+        <div class="d-flex text-end"><button type="submit" class="btn btn-primary rounded-0 ms-auto">Submit</button></div>
+    </form>
+           
+          </div>
+        </div>
+
+       <!-- Toastr JavaScript -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+    <!-- Custom JavaScript -->
+    <script>
+        $(document).ready(function() {
+            <?php if (!empty($message)): ?>
+                <?php if ($isValid): ?>
+                    toastr.success('<?php echo $message; ?>');
+                    window.location.href='verify.php?email=<?php  echo $email ?>';
+                <?php else: ?>
+                    toastr.error('<?php echo $message; ?>');
+                <?php endif; ?>
+            <?php endif; ?>
+        });
+    </script>
+    <script src="assets/bootstrap/js/bootstrap.min.js"></script>
+</body>
+</html>
