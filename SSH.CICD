@@ -1,0 +1,114 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches:
+      - master
+      - dev
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set Deployment Variables
+        run: |
+          if [[ "${{ github.ref_name }}" == "master" ]]; then
+            echo "DEPLOY_BRANCH=master" >> $GITHUB_ENV
+            echo "DEPLOY_PATH=/home/zjqdfnop/public_html" >> $GITHUB_ENV
+          elif [[ "${{ github.ref_name }}" == "dev" ]]; then
+            echo "DEPLOY_BRANCH=dev" >> $GITHUB_ENV
+            echo "DEPLOY_PATH=/home/zjqdfnop/dev.spadeals.com.ng" >> $GITHUB_ENV
+          fi
+
+      - name: Debug Variables
+        run: |
+          echo "Debug: DEPLOY_BRANCH=$DEPLOY_BRANCH"
+          echo "Debug: DEPLOY_PATH=$DEPLOY_PATH"
+
+      - name: Configure SSH
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y openssh-client
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          eval "$(ssh-agent -s)"
+          ssh-add ~/.ssh/id_rsa
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Test SSH Connection to GitHub
+        run: |
+          ssh -T git@github.com || true  # Ignore error if no shell access
+
+      - name: Deploy to Server
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: 'DEPLOY_BRANCH,DEPLOY_PATH'
+          script: |
+            set -e  # Exit immediately if any command fails
+
+            echo "Deploying branch: $DEPLOY_BRANCH"
+            echo "Deploying to path: $DEPLOY_PATH"
+
+            # Ensure the deployment directory exists
+            mkdir -p "$DEPLOY_PATH"
+            cd "$DEPLOY_PATH" || { echo "Failed to access directory. Exiting."; exit 1; }
+
+            # Initialize or update the Git repository
+            if [ ! -d '.git' ]; then
+              echo "No valid Git repository found. Cloning..."
+              git clone https://${{ secrets.SECRET_TOKEN }}@github.com/Billyjeem123/spadeals.git .
+            else
+              echo "Git repository exists. Fetching latest changes..."
+              git fetch --all --tags --prune
+              git reset --hard origin/$DEPLOY_BRANCH
+            fi
+
+            # Check for Laravel files before proceeding
+            if [ ! -f 'artisan' ] || [ ! -f 'composer.json' ]; then
+              echo "Laravel framework files not found! Exiting."
+              exit 1
+            fi
+
+            # Copy .env.example to .env if it doesn't exist
+            if [ ! -f ".env" ]; then
+              echo "Creating .env file from .env.example..."
+              cp .env.example .env
+            fi
+
+            # Put the site in maintenance mode
+            php artisan down || true
+
+            # Run migrations only if needed
+              if php artisan migrate:status | grep -q 'No'; then
+            echo "Running migrations..."
+            php artisan migrate --force
+            else
+            echo "No new migrations found. Skipping."
+             fi
+
+            # Run composer install if needed
+            if [ -f 'composer.lock' ]; then
+              LAST_COMPOSER_UPDATE=$(stat -c %Y composer.lock)
+              LAST_VENDOR_UPDATE=$(stat -c %Y vendor 2>/dev/null || echo 0)
+              if [ "$LAST_COMPOSER_UPDATE" -gt "$LAST_VENDOR_UPDATE" ]; then
+                echo "composer.lock has changed. Running composer install..."
+                composer install --no-ansi --no-dev --no-interaction --no-plugins --no-progress --no-scripts --optimize-autoloader
+              else
+                echo "No changes in composer.lock. Skipping composer install."
+              fi
+            else
+              echo "No composer.lock found. Running composer install..."
+              composer install --no-ansi --no-dev --no-interaction --no-plugins --no-progress --no-scripts --optimize-autoloader
+            fi
+
+            # Run database migrations
+           
+
+            # Bring the site back online
+            php artisan up
